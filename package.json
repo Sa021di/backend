@@ -1,4 +1,5 @@
 {
+<<<<<<< HEAD
   "name": "myexpoapp",
   "version": "1.0.0",
   "main": "expo/AppEntry.js",
@@ -40,4 +41,17 @@
     "@babel/core": "^7.20.0"
   },
   "private": true
+=======
+    "private": true,
+    "type": "module",
+    "scripts": {
+        "dev": "vite",
+        "build": "vite build"
+    },
+    "devDependencies": {
+        "axios": "^1.6.4",
+        "laravel-vite-plugin": "^1.0.0",
+        "vite": "^5.0.0"
+    }
+>>>>>>> fe2970cfed6e86559b0a0b22d66e1f3b768e2548
 }
