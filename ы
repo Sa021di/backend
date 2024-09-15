@@ -1,0 +1,285 @@
+import React, { useState, useEffect } from 'react';
+import { View, Text, TextInput, TouchableOpacity, FlatList, Image, StyleSheet } from 'react-native';
+import axios from 'axios';
+import echo from '../services/pusherService';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Ionicons, FontAwesome, MaterialCommunityIcons } from '@expo/vector-icons';
+import { useNavigation } from '@react-navigation/native';
+
+function MainScreen() {
+    const navigation = useNavigation();
+    const [posts, setPosts] = useState([]);
+    const [body, setBody] = useState('');
+    const [image, setImage] = useState(null);
+    const [likedPosts, setLikedPosts] = useState(new Set());
+    const [bookmarkedPosts, setBookmarkedPosts] = useState(new Set());
+    const [userName, setUserName] = useState('');
+    const [newComment, setNewComment] = useState('');
+    const [comments, setComments] = useState({});
+    const [visibleComments, setVisibleComments] = useState(new Set());
+    const [showMenu, setShowMenu] = useState(null);
+    const [editingPostId, setEditingPostId] = useState(null);
+    const [editBody, setEditBody] = useState('');
+
+    useEffect(() => {
+        const fetchInitialData = async () => {
+            try {
+                const token = await AsyncStorage.getItem('token');
+                const userResponse = await axios.get('http://localhost:8000/api/user', {
+                    headers: { Authorization: `Bearer ${token}` },
+                });
+                setUserName(userResponse.data.name);
+
+                const postsResponse = await axios.get('http://localhost:8000/api/posts', {
+                    headers: { Authorization: `Bearer ${token}` },
+                });
+                setPosts(postsResponse.data.posts);
+                setLikedPosts(new Set(postsResponse.data.likedPosts));
+
+                const storedBookmarkedPosts = JSON.parse(await AsyncStorage.getItem('bookmarkedPosts')) || [];
+                setBookmarkedPosts(new Set(storedBookmarkedPosts));
+
+                const commentsData = {};
+                for (const post of postsResponse.data.posts) {
+                    const commentsResponse = await axios.get(`http://localhost:8000/api/posts/${post.id}/comments`, {
+                        headers: { Authorization: `Bearer ${token}` },
+                    });
+                    commentsData[post.id] = commentsResponse.data.comments;
+                }
+                setComments(commentsData);
+            } catch (error) {
+                console.error('Error fetching initial data:', error);
+            }
+        };
+        fetchInitialData();
+
+        const channel = echo.channel('posts');
+        channel.listen('PostCreated', (e) => setPosts((prevPosts) => [e.post, ...prevPosts]));
+        channel.listen('LikeToggled', (e) => setPosts((prevPosts) =>
+            prevPosts.map((post) => post.id === e.post.id ? { ...post, likes_count: e.likesCount } : post)
+        ));
+        channel.listen('PostUpdated', (e) => setPosts((prevPosts) =>
+            prevPosts.map((post) => post.id === e.post.id ? { ...post, body: e.post.body } : post)
+        ));
+        channel.listen('PostDeleted', (e) => {
+            setPosts((prevPosts) => prevPosts.filter((post) => post.id !== e.postId));
+          });
+        channel.listen('CommentCreated', (e) => setComments((prevComments) => ({
+            ...prevComments,
+            [e.comment.post_id]: [e.comment, ...(prevComments[e.comment.post_id] || [])],
+        })));
+
+        return () => {
+            channel.stopListening('PostCreated');
+            channel.stopListening('LikeToggled');
+            channel.stopListening('PostUpdated');
+            channel.stopListening('PostDeleted');
+            channel.stopListening('CommentCreated');
+        };
+    }, []);
+
+    const createPost = async () => {
+        const formData = new FormData();
+        formData.append('body', body);
+        if (image) {
+            formData.append('image', image);
+        }
+
+        try {
+            await axios.post('http://localhost:8000/api/posts', formData, {
+                headers: {
+                    Authorization: `Bearer ${await AsyncStorage.getItem('token')}`,
+                    'Content-Type': 'multipart/form-data',
+                },
+            });
+            setBody('');
+            setImage(null);
+        } catch (error) {
+            console.error('Error creating post:', error);
+        }
+    };
+
+    const toggleLike = async (postId) => {
+        try {
+            const response = await axios.post(`http://localhost:8000/api/posts/${postId}/like`, {}, {
+                headers: { Authorization: `Bearer ${await AsyncStorage.getItem('token')}` },
+            });
+            const { likesCount } = response.data;
+
+            setPosts((prevPosts) => prevPosts.map((post) => post.id === postId ? { ...post, likes_count: likesCount } : post));
+            setLikedPosts((prevLikedPosts) => {
+                const updatedLikedPosts = new Set(prevLikedPosts);
+                if (updatedLikedPosts.has(postId)) updatedLikedPosts.delete(postId);
+                else updatedLikedPosts.add(postId);
+                return updatedLikedPosts;
+            });
+        } catch (error) {
+            console.error('Error toggling like:', error);
+        }
+    };
+
+    const toggleBookmark = async (postId) => {
+        try {
+            const isBookmarked = bookmarkedPosts.has(postId);
+            const url = `http://localhost:8000/api/posts/${postId}/${isBookmarked ? 'unbookmark' : 'bookmark'}`;
+            await axios.post(url, {}, { headers: { Authorization: `Bearer ${await AsyncStorage.getItem('token')}` } });
+
+            const updatedBookmarkedPosts = new Set(bookmarkedPosts);
+            if (isBookmarked) updatedBookmarkedPosts.delete(postId);
+            else updatedBookmarkedPosts.add(postId);
+
+            setBookmarkedPosts(updatedBookmarkedPosts);
+            await AsyncStorage.setItem('bookmarkedPosts', JSON.stringify([...updatedBookmarkedPosts]));
+        } catch (error) {
+            console.error('Error toggling bookmark:', error);
+        }
+    };
+
+    const addComment = async (postId) => {
+        try {
+            await axios.post(`http://localhost:8000/api/posts/${postId}/comments`, { body: newComment }, {
+                headers: { Authorization: `Bearer ${await AsyncStorage.getItem('token')}` },
+            });
+            setNewComment('');
+        } catch (error) {
+            console.error('Error adding comment:', error);
+        }
+    };
+
+    const handleDeletePost = async (postId) => {
+        try {
+            await axios.delete(`http://localhost:8000/api/posts/${postId}`, {
+                headers: { Authorization: `Bearer ${await AsyncStorage.getItem('token')}` },
+            });
+        } catch (error) {
+            console.error('Error deleting post:', error);
+        }
+    };
+
+    const handleEditPost = (post) => {
+        setEditingPostId(post.id);
+        setEditBody(post.body);
+    };
+
+    const saveEditPost = async (postId) => {
+        try {
+            await axios.put(`http://localhost:8000/api/posts/${postId}`, { body: editBody }, {
+                headers: { Authorization: `Bearer ${await AsyncStorage.getItem('token')}` },
+            });
+            setEditingPostId(null);
+            setEditBody('');
+        } catch (error) {
+            console.error('Error updating post:', error);
+        }
+    };
+
+    const toggleComments = (postId) => {
+        setVisibleComments((prevVisibleComments) => {
+            const updatedVisibleComments = new Set(prevVisibleComments);
+            if (updatedVisibleComments.has(postId)) updatedVisibleComments.delete(postId);
+            else updatedVisibleComments.add(postId);
+            return updatedVisibleComments;
+        });
+    };
+
+    const toggleMenu = (postId) => {
+        setShowMenu((prevShowMenu) => (prevShowMenu === postId ? null : postId));
+    };
+
+    return (
+        <View style={styles.container}>
+            <View style={styles.header}>
+                <TouchableOpacity onPress={() => navigation.navigate('CreatePost')} style={styles.iconButton}>
+                    <FontAwesome name="plus" size={24} color="#fff" />
+                </TouchableOpacity>
+                <TouchableOpacity onPress={() => navigation.navigate('Profile')} style={styles.iconButton}>
+                    <Ionicons name="person" size={24} color="#fff" />
+                </TouchableOpacity>
+                <TouchableOpacity onPress={() => navigation.navigate('Bookmarks')} style={styles.iconButton}>
+                    <MaterialCommunityIcons name="bookmark-outline" size={24} color="#fff" />
+                </TouchableOpacity>
+            </View>
+
+            <FlatList
+                data={posts}
+                renderItem={({ item: post }) => (
+                    <View key={post.id} style={styles.postContainer}>
+                        <View style={styles.postHeader}>
+                            <Text style={styles.username}>{post.user.name}</Text>
+                            {userName === post.user.name && (
+                                <TouchableOpacity onPress={() => toggleMenu(post.id)} style={styles.menuIcon}>
+                                    <Ionicons name="md-more" size={24} color="black" />
+                                </TouchableOpacity>
+                            )}
+                        </View>
+                        <View style={styles.postBody}>
+                            {editingPostId === post.id ? (
+                                <>
+                                    <TextInput
+                                        value={editBody}
+                                        onChangeText={setEditBody}
+                                        style={styles.editInput}
+                                        multiline
+                                    />
+                                    <TouchableOpacity onPress={() => saveEditPost(post.id)} style={styles.saveButton}>
+                                        <Text style={styles.saveButtonText}>Save</Text>
+                                    </TouchableOpacity>
+                                </>
+                            ) : (
+                                <Text style={styles.postText}>{post.body}</Text>
+                            )}
+                        </View>
+                        {post.image_url && <Image source={{ uri: post.image_url }} style={styles.postImage} />}
+                        <View style={styles.postFooter}>
+                            <TouchableOpacity onPress={() => toggleLike(post.id)}>
+                                <FontAwesome
+                                    name="heart"
+                                    size={24}
+                                    color={likedPosts.has(post.id) ? 'red' : 'gray'}
+                                />
+                                <Text style={styles.likeCount}>{post.likes_count}</Text>
+                            </TouchableOpacity>
+                            <TouchableOpacity onPress={() => toggleComments(post.id)} style={styles.iconButton}>
+                                <FontAwesome name="comment" size={24} color="gray" />
+                            </TouchableOpacity>
+                            <TouchableOpacity onPress={() => toggleBookmark(post.id)} style={styles.iconButton}>
+                                <FontAwesome
+                                    name="bookmark"
+                                    size={24}
+                                    color={bookmarkedPosts.has(post.id) ? 'blue' : 'gray'}
+                                />
+                            </TouchableOpacity>
+                        </View>
+                        {visibleComments.has(post.id) && (
+                            <View style={styles.commentsSection}>
+                                {comments[post.id]?.map((comment) => (
+                                    <Text key={comment.id} style={styles.commentText}>{comment.body}</Text>
+                                ))}
+                                <TextInput
+                                    value={newComment}
+                                    onChangeText={setNewComment}
+                                    placeholder="Add a comment"
+                                    style={styles.commentInput}
+                                />
+                                <TouchableOpacity onPress={() => addComment(post.id)} style={styles.commentButton}>
+                                    <Text style={styles.commentButtonText}>Post</Text>
+                                </TouchableOpacity>
+                            </View>
+                        )}
+                        {showMenu === post.id && (
+                            <View style={styles.menu}>
+                                <TouchableOpacity onPress={() => handleEditPost(post)}>
+                                    <Text style={styles.menuItem}>Edit</Text>
+                                </TouchableOpacity>
+                                <TouchableOpacity onPress={() => handleDeletePost(post.id)}>
+                                    <Text style={styles.menuItem}>Delete</Text>
+                                </TouchableOpacity>
+                            </View>
+                        )}
+                    </View>
+                )}
+                keyExtractor={(item) => item.id.toString()}
+            />
+        </View>
+    );
+}
